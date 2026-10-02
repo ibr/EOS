@@ -31,6 +31,7 @@ develop/install.md
 akkudoktoreos/configuration.md
 develop/update.md
 akkudoktoreos/upgrade-genetic.md
+akkudoktoreos/integration-pitfalls.md
 develop/revert.md
 akkudoktoreos/adapter/adapterhomeassistant.md
 akkudoktoreos/adapter/adapternodered.md
