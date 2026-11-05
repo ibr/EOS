@@ -322,11 +322,17 @@
                "calibration_reference_days": 30,
                "calibration_outage_filter_enabled": true,
                "calibration_outage_threshold": 0.55,
+               "calibration_exclude_full_battery": true,
+               "calibration_full_battery_margin_percent": 0.5,
                "calibration_min_healthy_days": 3,
                "calibration_azimuth_bin_degrees": 45,
                "calibration_prior_kwh": 5.0,
                "calibration_min_factor": 0.5,
-               "calibration_max_factor": 1.5
+               "calibration_max_factor": 1.5,
+               "nowcast_enabled": false,
+               "nowcast_min_intervals": 2,
+               "nowcast_min_factor": 0.5,
+               "nowcast_max_factor": 1.5
            },
            "pvforecastimport": {
                "import_file_path": null,

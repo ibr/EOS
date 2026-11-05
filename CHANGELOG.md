@@ -40,6 +40,11 @@ compatibility changes and a short test procedure. These changes are not yet a ta
   and coverage information. A capacity estimate does not overwrite configured capacity.
 - Optional local, calibratable forecasting within `PVForecastAkkudoktor`; the remote
   backend remains the default.
+- PV calibration now excludes intervals with a full stationary battery by default, so
+  curtailment at maximum SoC is not learned as a permanent PV model loss.
+- Optional intraday PV nowcast (`pvforecast.akkudoktor.nowcast_enabled`) that compares
+  today's measured production with the calibrated model and adjusts only the remaining
+  slots of the same local day.
 - Optional load-dependent inverter efficiency for GENETIC: `dc_to_ac_efficiency_curve`
   models the lower DC-to-AC efficiency at low load. Without it the constant
   `dc_to_ac_efficiency` applies unchanged.

@@ -55,11 +55,17 @@
                "calibration_reference_days": 30,
                "calibration_outage_filter_enabled": true,
                "calibration_outage_threshold": 0.55,
+               "calibration_exclude_full_battery": true,
+               "calibration_full_battery_margin_percent": 0.5,
                "calibration_min_healthy_days": 3,
                "calibration_azimuth_bin_degrees": 45,
                "calibration_prior_kwh": 5.0,
                "calibration_min_factor": 0.5,
-               "calibration_max_factor": 1.5
+               "calibration_max_factor": 1.5,
+               "nowcast_enabled": false,
+               "nowcast_min_intervals": 2,
+               "nowcast_min_factor": 0.5,
+               "nowcast_max_factor": 1.5
            },
            "pvforecastimport": {
                "import_file_path": null,
@@ -171,11 +177,17 @@
                "calibration_reference_days": 30,
                "calibration_outage_filter_enabled": true,
                "calibration_outage_threshold": 0.55,
+               "calibration_exclude_full_battery": true,
+               "calibration_full_battery_margin_percent": 0.5,
                "calibration_min_healthy_days": 3,
                "calibration_azimuth_bin_degrees": 45,
                "calibration_prior_kwh": 5.0,
                "calibration_min_factor": 0.5,
-               "calibration_max_factor": 1.5
+               "calibration_max_factor": 1.5,
+               "nowcast_enabled": false,
+               "nowcast_min_intervals": 2,
+               "nowcast_min_factor": 0.5,
+               "nowcast_max_factor": 1.5
            },
            "pvforecastimport": {
                "import_file_path": null,
@@ -599,6 +611,8 @@
 | calibration_azimuth_bin_degrees | `int` | `rw` | `45` | Width of the solar-azimuth bins for the correction. 0 fits a single global factor only. |
 | calibration_days | `int` | `rw` | `30` | Length of the measurement window used to fit the correction. |
 | calibration_enabled | `bool` | `rw` | `False` | Correct systematic model error against measured PV production. Requires `measurement.pv_production_emr_keys` to be configured and fed. Fits a global scale factor plus per-solar-azimuth factors, which is what catches near-field shading the horizon profile misses. |
+| calibration_exclude_full_battery | `bool` | `rw` | `True` | Exclude intervals in which every stationary battery was at (or above) its configured maximum state of charge from the PV calibration fit. A full battery can curtail PV, so those intervals under-report the available yield and must not be learned as a permanent model loss. |
+| calibration_full_battery_margin_percent | `float` | `rw` | `0.5` | SoC tolerance below the configured battery maximum at which an interval is treated as full for calibration and nowcast filtering [%]. |
 | calibration_max_factor | `float` | `rw` | `1.5` | Upper clamp on any fitted correction factor. |
 | calibration_min_factor | `float` | `rw` | `0.5` | Lower clamp on any fitted correction factor. |
 | calibration_min_healthy_days | `int` | `rw` | `3` | Minimum number of healthy days used for a fit. Older healthy days from the reference window are added when the recent window contains fewer. |
@@ -608,6 +622,10 @@
 | calibration_reference_days | `int` | `rw` | `30` | Lookback used to distinguish healthy production from outages or curtailment. If the calibration window contains too few healthy days, the most recent healthy days from this reference window are used. |
 | forecast_days | `Optional[int]` | `rw` | `None` | Forecast horizon in days (1-16). Leave empty to derive it from `prediction.hours`, which is what keeps the optimizer's tail horizon fed. |
 | inverter_efficiency | `float` | `rw` | `0.96` | Nominal inverter efficiency (PVWatts eta_inv_nom). |
+| nowcast_enabled | `bool` | `rw` | `False` | Adjust today's remaining PV forecast from measured PV production since local midnight. This is an optional intraday nowcast on top of the long-term calibration. Intervals with a full battery are ignored so curtailment is not mistaken for a weak PV model. |
+| nowcast_max_factor | `float` | `rw` | `1.5` | Upper clamp on the intraday nowcast factor. |
+| nowcast_min_factor | `float` | `rw` | `0.5` | Lower clamp on the intraday nowcast factor. |
+| nowcast_min_intervals | `int` | `rw` | `2` | Minimum number of complete elapsed forecast intervals required before the nowcast factor is applied. |
 | past_days | `Optional[int]` | `rw` | `None` | Days of past data to request (0-92). Leave empty to derive it from `prediction.historic_hours`. |
 | resolution_minutes | `int` | `rw` | `15` | Forecast resolution in minutes. 15 requests Open-Meteo's `minutely_15` block (natively resolved over Central Europe and North America, interpolated from hourly elsewhere); 60 requests the `hourly` block. |
 | shift_to_interval_start | `bool` | `rw` | `True` | Open-Meteo stamps an interval mean with the interval END. EOS labels an interval by its START, so records are shifted back by one interval. Disable only to compare like-for-like against a provider that does not. |
@@ -644,11 +662,17 @@
                "calibration_reference_days": 30,
                "calibration_outage_filter_enabled": true,
                "calibration_outage_threshold": 0.55,
+               "calibration_exclude_full_battery": true,
+               "calibration_full_battery_margin_percent": 0.5,
                "calibration_min_healthy_days": 3,
                "calibration_azimuth_bin_degrees": 45,
                "calibration_prior_kwh": 5.0,
                "calibration_min_factor": 0.5,
-               "calibration_max_factor": 1.5
+               "calibration_max_factor": 1.5,
+               "nowcast_enabled": true,
+               "nowcast_min_intervals": 2,
+               "nowcast_min_factor": 0.5,
+               "nowcast_max_factor": 1.5
            }
        }
    }
