@@ -261,6 +261,70 @@ async def _feed_measurements_with_recent_outage(
     )
 
 
+async def _feed_full_battery_measurements(
+    instance: PVForecastAkkudoktorLocal,
+    frame: pd.DataFrame,
+    full_day,
+    healthy_bias: float = 0.8,
+    curtailed_bias: float = 0.2,
+    pv_key: str = "pv_full_battery_emr",
+    soc_key: str = "battery1-soc-factor",
+) -> None:
+    """Write a healthy PV history plus a curtailed day at full battery SoC."""
+    instance.config.measurement.pv_production_emr_keys = [pv_key]
+    measurement = get_measurement()
+
+    hourly = frame["ac_power"].resample("1h").mean()
+    hourly = hourly.loc[hourly.index < START]
+
+    cumulative = 0.0
+    for timestamp, power_w in hourly.items():
+        timestamp = pd.Timestamp(str(timestamp))
+        await measurement.update_value(
+            pendulum.instance(timestamp.to_pydatetime()), pv_key, round(cumulative, 6)
+        )
+        await measurement.update_value(
+            pendulum.instance(timestamp.to_pydatetime()),
+            soc_key,
+            1.0 if timestamp.date() == full_day else 0.5,
+        )
+        bias = curtailed_bias if timestamp.date() == full_day else healthy_bias
+        cumulative += float(power_w) * bias / 1000.0
+    await measurement.update_value(
+        pendulum.instance(hourly.index[-1].to_pydatetime()).add(hours=1),
+        pv_key,
+        round(cumulative, 6),
+    )
+
+
+async def _feed_nowcast_measurements(
+    instance: PVForecastAkkudoktorLocal,
+    frame: pd.DataFrame,
+    now: pendulum.DateTime,
+    bias: float,
+    key: str,
+) -> None:
+    """Write cumulative PV readings for the elapsed intervals of `now`'s day."""
+    instance.config.measurement.pv_production_emr_keys = [key]
+    measurement = get_measurement()
+    now_utc = pd.Timestamp(now.in_timezone("UTC").isoformat())
+    day_start = pd.Timestamp(now.start_of("day").in_timezone("UTC").isoformat())
+    slots = frame.loc[(frame.index >= day_start) & (frame.index < now_utc), "ac_power"]
+
+    cumulative = 0.0
+    for timestamp, power_w in slots.items():
+        timestamp = pd.Timestamp(str(timestamp))
+        await measurement.update_value(
+            pendulum.instance(timestamp.to_pydatetime()), key, round(cumulative, 6)
+        )
+        cumulative += float(power_w) * 0.25 * bias / 1000.0
+    await measurement.update_value(
+        pendulum.instance(slots.index[-1].to_pydatetime()).add(minutes=15),
+        key,
+        round(cumulative, 6),
+    )
+
+
 async def _feed_native_quarter_hour_measurements(
     instance: PVForecastAkkudoktorLocal, frame: pd.DataFrame, bias: float, key: str
 ) -> None:
@@ -362,6 +426,118 @@ async def test_calibration_excludes_recent_demand_limited_outage(pvforecast_inst
     assert (
         corrected.loc[producing, "ac_power"] / frame.loc[producing, "ac_power"]
     ).to_numpy() == pytest.approx(np.full(producing.sum(), global_factor))
+
+
+@pytest.mark.asyncio
+async def test_calibration_excludes_full_battery_intervals(pvforecast_instance, caplog):
+    """Curtailment at a full battery must not bias the PV model downwards."""
+    pvforecast_instance.config.merge_settings_from_dict(
+        {
+            "devices": {
+                "max_batteries": 1,
+                "batteries": {
+                    "battery1": {
+                        "device_id": "battery1",
+                        "capacity_wh": 10000,
+                        "max_soc_percentage": 100,
+                    }
+                },
+            }
+        }
+    )
+    pvforecast_instance.config.pvforecast.akkudoktor = PVForecastAkkudoktorLocalCommonSettings(
+        calibration_enabled=True,
+        calibration_days=5,
+        calibration_reference_days=5,
+        calibration_azimuth_bin_degrees=0,
+        calibration_outage_filter_enabled=False,
+        calibration_exclude_full_battery=True,
+    )
+
+    frame = await pvforecast_instance._forecast_frame(synthetic_openmeteo(), calibrate=False)
+    full_day = START.subtract(days=1).date()
+    await _feed_full_battery_measurements(pvforecast_instance, frame, full_day=full_day)
+
+    with caplog.at_level("INFO"):
+        calibration = await pvforecast_instance._fit_calibration(frame)
+
+    assert calibration is not None
+    global_factor, _ = calibration
+    assert global_factor == pytest.approx(0.8, abs=0.03)
+    assert "excluded" in caplog.text and "full battery" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_calibration_without_full_battery_filter_learns_curtailment(pvforecast_instance):
+    """The new filter is what prevents a full-battery day from lowering the fit."""
+    pvforecast_instance.config.merge_settings_from_dict(
+        {
+            "devices": {
+                "max_batteries": 1,
+                "batteries": {
+                    "battery1": {
+                        "device_id": "battery1",
+                        "capacity_wh": 10000,
+                        "max_soc_percentage": 100,
+                    }
+                },
+            }
+        }
+    )
+    pvforecast_instance.config.pvforecast.akkudoktor = PVForecastAkkudoktorLocalCommonSettings(
+        calibration_enabled=True,
+        calibration_days=5,
+        calibration_reference_days=5,
+        calibration_azimuth_bin_degrees=0,
+        calibration_outage_filter_enabled=False,
+        calibration_exclude_full_battery=False,
+    )
+
+    frame = await pvforecast_instance._forecast_frame(synthetic_openmeteo(), calibrate=False)
+    await _feed_full_battery_measurements(
+        pvforecast_instance, frame, full_day=START.subtract(days=1).date()
+    )
+
+    calibration = await pvforecast_instance._fit_calibration(frame)
+    assert calibration is not None
+    global_factor, _ = calibration
+    assert global_factor < 0.75
+
+
+@pytest.mark.asyncio
+async def test_nowcast_scales_only_the_remaining_same_day(pvforecast_instance):
+    """Measured PV so far must correct today's remaining slots, not tomorrow."""
+    now = START.add(hours=12)
+    get_ems().set_start_datetime(now)
+    try:
+        pvforecast_instance.config.pvforecast.akkudoktor = PVForecastAkkudoktorLocalCommonSettings(
+            calibration_enabled=False,
+            nowcast_enabled=True,
+            nowcast_min_intervals=2,
+            nowcast_min_factor=0.5,
+            nowcast_max_factor=1.5,
+        )
+        raw = await pvforecast_instance._forecast_frame(synthetic_openmeteo(), calibrate=False)
+        await _feed_nowcast_measurements(
+            pvforecast_instance, raw, now=now, bias=1.1, key="pv_nowcast_emr"
+        )
+        adjusted = await pvforecast_instance._forecast_frame(synthetic_openmeteo())
+
+        now_ts = pd.Timestamp(now.in_timezone("UTC").isoformat())
+        today = pd.Timestamp(now.start_of("day").in_timezone("UTC").isoformat())
+        future_today = (raw.index >= now_ts) & (raw.index.normalize() == today)
+        tomorrow = raw.index.normalize() == today + pd.Timedelta(days=1)
+        producing = (raw["ac_power"] > 100.0) & future_today
+
+        ratio_today = adjusted.loc[producing, "ac_power"] / raw.loc[producing, "ac_power"]
+        assert ratio_today.to_numpy() == pytest.approx(np.full(int(producing.sum()), 1.1), abs=0.02)
+        producing_tomorrow = (raw["ac_power"] > 100.0) & tomorrow
+        ratio_tomorrow = (
+            adjusted.loc[producing_tomorrow, "ac_power"] / raw.loc[producing_tomorrow, "ac_power"]
+        )
+        assert ratio_tomorrow.to_numpy() == pytest.approx(np.ones(int(producing_tomorrow.sum())))
+    finally:
+        get_ems().set_start_datetime(START)
 
 
 @pytest.mark.asyncio

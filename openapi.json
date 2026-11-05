@@ -8,7 +8,7 @@
       "name": "Apache 2.0",
       "url": "https://www.apache.org/licenses/LICENSE-2.0.html"
     },
-    "version": "v0.3.0.dev2611011668106370"
+    "version": "v0.3.0.dev2611051445111443"
   },
   "paths": {
     "/v1/measurement/battery-capacity/{battery_id}": {
@@ -14494,6 +14494,27 @@
               0.5
             ]
           },
+          "calibration_exclude_full_battery": {
+            "type": "boolean",
+            "title": "Calibration Exclude Full Battery",
+            "description": "Exclude intervals in which every stationary battery was at (or above) its configured maximum state of charge from the PV calibration fit. A full battery can curtail PV, so those intervals under-report the available yield and must not be learned as a permanent model loss.",
+            "default": true,
+            "examples": [
+              true
+            ]
+          },
+          "calibration_full_battery_margin_percent": {
+            "type": "number",
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "title": "Calibration Full Battery Margin Percent",
+            "description": "SoC tolerance below the configured battery maximum at which an interval is treated as full for calibration and nowcast filtering [%].",
+            "default": 0.5,
+            "examples": [
+              0.5,
+              1.0
+            ]
+          },
           "calibration_min_healthy_days": {
             "type": "integer",
             "maximum": 31.0,
@@ -14548,6 +14569,44 @@
             "default": 1.5,
             "examples": [
               1.5
+            ]
+          },
+          "nowcast_enabled": {
+            "type": "boolean",
+            "title": "Nowcast Enabled",
+            "default": true
+          },
+          "nowcast_min_intervals": {
+            "type": "integer",
+            "maximum": 96.0,
+            "minimum": 1.0,
+            "title": "Nowcast Min Intervals",
+            "description": "Minimum number of complete elapsed forecast intervals required before the nowcast factor is applied.",
+            "default": 2,
+            "examples": [
+              2,
+              3
+            ]
+          },
+          "nowcast_min_factor": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Nowcast Min Factor",
+            "description": "Lower clamp on the intraday nowcast factor.",
+            "default": 0.5,
+            "examples": [
+              0.5
+            ]
+          },
+          "nowcast_max_factor": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Nowcast Max Factor",
+            "description": "Upper clamp on the intraday nowcast factor.",
+            "default": 1.5,
+            "examples": [
+              1.5,
+              2.0
             ]
           },
           "regional_weather_model": {
@@ -14618,11 +14677,6 @@
             "minimum": 31.0,
             "title": "Archive Retention Days",
             "default": 60
-          },
-          "nowcast_enabled": {
-            "type": "boolean",
-            "title": "Nowcast Enabled",
-            "default": true
           },
           "trend_enabled": {
             "type": "boolean",
@@ -14967,6 +15021,27 @@
               0.5
             ]
           },
+          "calibration_exclude_full_battery": {
+            "type": "boolean",
+            "title": "Calibration Exclude Full Battery",
+            "description": "Exclude intervals in which every stationary battery was at (or above) its configured maximum state of charge from the PV calibration fit. A full battery can curtail PV, so those intervals under-report the available yield and must not be learned as a permanent model loss.",
+            "default": true,
+            "examples": [
+              true
+            ]
+          },
+          "calibration_full_battery_margin_percent": {
+            "type": "number",
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "title": "Calibration Full Battery Margin Percent",
+            "description": "SoC tolerance below the configured battery maximum at which an interval is treated as full for calibration and nowcast filtering [%].",
+            "default": 0.5,
+            "examples": [
+              0.5,
+              1.0
+            ]
+          },
           "calibration_min_healthy_days": {
             "type": "integer",
             "maximum": 31.0,
@@ -15021,6 +15096,48 @@
             "default": 1.5,
             "examples": [
               1.5
+            ]
+          },
+          "nowcast_enabled": {
+            "type": "boolean",
+            "title": "Nowcast Enabled",
+            "description": "Adjust today's remaining PV forecast from measured PV production since local midnight. This is an optional intraday nowcast on top of the long-term calibration. Intervals with a full battery are ignored so curtailment is not mistaken for a weak PV model.",
+            "default": false,
+            "examples": [
+              true
+            ]
+          },
+          "nowcast_min_intervals": {
+            "type": "integer",
+            "maximum": 96.0,
+            "minimum": 1.0,
+            "title": "Nowcast Min Intervals",
+            "description": "Minimum number of complete elapsed forecast intervals required before the nowcast factor is applied.",
+            "default": 2,
+            "examples": [
+              2,
+              3
+            ]
+          },
+          "nowcast_min_factor": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Nowcast Min Factor",
+            "description": "Lower clamp on the intraday nowcast factor.",
+            "default": 0.5,
+            "examples": [
+              0.5
+            ]
+          },
+          "nowcast_max_factor": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Nowcast Max Factor",
+            "description": "Upper clamp on the intraday nowcast factor.",
+            "default": 1.5,
+            "examples": [
+              1.5,
+              2.0
             ]
           }
         },

@@ -123,10 +123,12 @@ class PVForecastAkkudoktorLocalCommonSettings(SettingsBaseModel):
     )
 
     @model_validator(mode="after")
-    def validate_calibration_bounds(self) -> Self:
+    def validate_correction_bounds(self) -> Self:
         """Reject inverted correction bounds."""
         if self.calibration_min_factor > self.calibration_max_factor:
             raise ValueError("calibration_min_factor must not exceed calibration_max_factor")
+        if self.nowcast_min_factor > self.nowcast_max_factor:
+            raise ValueError("nowcast_min_factor must not exceed nowcast_max_factor")
         return self
 
     resolution_minutes: int = Field(
@@ -294,6 +296,30 @@ class PVForecastAkkudoktorLocalCommonSettings(SettingsBaseModel):
             "examples": [0.55, 0.5],
         },
     )
+    calibration_exclude_full_battery: bool = Field(
+        default=True,
+        json_schema_extra={
+            "description": (
+                "Exclude intervals in which every stationary battery was at (or above) "
+                "its configured maximum state of charge from the PV calibration fit. "
+                "A full battery can curtail PV, so those intervals under-report the "
+                "available yield and must not be learned as a permanent model loss."
+            ),
+            "examples": [True],
+        },
+    )
+    calibration_full_battery_margin_percent: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=10.0,
+        json_schema_extra={
+            "description": (
+                "SoC tolerance below the configured battery maximum at which an interval "
+                "is treated as full for calibration and nowcast filtering [%]."
+            ),
+            "examples": [0.5, 1.0],
+        },
+    )
     calibration_min_healthy_days: int = Field(
         default=3,
         ge=1,
@@ -343,6 +369,47 @@ class PVForecastAkkudoktorLocalCommonSettings(SettingsBaseModel):
         json_schema_extra={
             "description": "Upper clamp on any fitted correction factor.",
             "examples": [1.5],
+        },
+    )
+
+    nowcast_enabled: bool = Field(
+        default=False,
+        json_schema_extra={
+            "description": (
+                "Adjust today's remaining PV forecast from measured PV production since "
+                "local midnight. This is an optional intraday nowcast on top of the "
+                "long-term calibration. Intervals with a full battery are ignored so "
+                "curtailment is not mistaken for a weak PV model."
+            ),
+            "examples": [True],
+        },
+    )
+    nowcast_min_intervals: int = Field(
+        default=2,
+        ge=1,
+        le=96,
+        json_schema_extra={
+            "description": (
+                "Minimum number of complete elapsed forecast intervals required before "
+                "the nowcast factor is applied."
+            ),
+            "examples": [2, 3],
+        },
+    )
+    nowcast_min_factor: float = Field(
+        default=0.5,
+        gt=0.0,
+        json_schema_extra={
+            "description": "Lower clamp on the intraday nowcast factor.",
+            "examples": [0.5],
+        },
+    )
+    nowcast_max_factor: float = Field(
+        default=1.5,
+        gt=0.0,
+        json_schema_extra={
+            "description": "Upper clamp on the intraday nowcast factor.",
+            "examples": [1.5, 2.0],
         },
     )
 
@@ -740,6 +807,8 @@ class PVForecastAkkudoktorLocal(PVForecastProvider[PVForecastDataRecordT]):
                     global_factor=global_factor,
                     timezone=self.config.general.timezone,
                 )
+            if settings.nowcast_enabled:
+                frame = await self._apply_nowcast(frame)
         return frame
 
     # ------------------------------------------------------------ calibration
@@ -889,6 +958,69 @@ class PVForecastAkkudoktorLocal(PVForecastProvider[PVForecastDataRecordT]):
             totals = values if totals is None else totals + values
         return np.asarray([] if totals is None else totals, dtype=float)
 
+    @staticmethod
+    def _full_battery_soc_mask(
+        soc: np.ndarray, max_soc_percentage: float, margin_percent: float
+    ) -> np.ndarray:
+        """Return intervals whose battery SoC is at or above its configured maximum."""
+        soc_percent = np.asarray(soc, dtype=float) * 100.0
+        return np.isfinite(soc_percent) & (soc_percent >= max_soc_percentage - margin_percent)
+
+    async def _full_battery_intervals(
+        self,
+        start_datetime: Any,
+        end_datetime: Any,
+        interval: Any,
+        length: int,
+    ) -> np.ndarray:
+        """Find intervals in which all stationary batteries were full.
+
+        A full battery can curtail PV without an inverter fault. Such intervals are
+        not evidence that the PV model is wrong, so calibration and the intraday
+        nowcast must not learn from them. Missing SoC data is treated as "not full";
+        the filter only narrows the fit when the relevant measurement is available.
+        """
+        batteries = list((self.config.devices.batteries or {}).values())
+        if not batteries or length <= 0:
+            return np.zeros(length, dtype=bool)
+
+        margin = float(self._settings.calibration_full_battery_margin_percent)
+        full_masks: list[np.ndarray] = []
+        for battery in batteries:
+            try:
+                soc = await self.measurement.key_to_array(
+                    key=battery.measurement_key_soc_factor,
+                    start_datetime=start_datetime,
+                    end_datetime=end_datetime,
+                    interval=interval,
+                    fill_method="ffill",
+                    resample_method="mean",
+                    dropna=False,
+                )
+            except (KeyError, ValueError):
+                continue
+            soc_array = np.asarray(soc, dtype=float)
+            if soc_array.size != length:
+                logger.debug(
+                    "PV calibration: SoC series for {} has {} instead of {} intervals; "
+                    "skipping full-battery filter for it.",
+                    battery.device_id,
+                    soc_array.size,
+                    length,
+                )
+                continue
+            full_masks.append(
+                PVForecastAkkudoktorLocal._full_battery_soc_mask(
+                    soc_array,
+                    float(battery.max_soc_percentage),
+                    margin,
+                )
+            )
+
+        if not full_masks:
+            return np.zeros(length, dtype=bool)
+        return np.logical_and.reduce(full_masks)
+
     async def _fit_calibration(self, frame: pd.DataFrame) -> Optional[tuple[float, np.ndarray]]:
         """Fit correction factors from measured PV production against the model.
 
@@ -984,6 +1116,22 @@ class PVForecastAkkudoktorLocal(PVForecastProvider[PVForecastDataRecordT]):
             & (measured_kwh >= 0.0)
         )
         shape_usable = usable.copy()
+
+        # A full battery may curtail PV. Exclude those intervals before the outage
+        # heuristic runs: the day-level ratio can stay above its threshold when only
+        # the midday hours are clipped, which would otherwise bias the fit downwards.
+        if settings.calibration_exclude_full_battery:
+            full_battery = await self._full_battery_intervals(
+                start, end, interval, len(measured_kwh)
+            )
+            excluded_intervals = int((usable & full_battery).sum())
+            if excluded_intervals:
+                logger.info(
+                    "PVForecastAkkudoktorLocal calibration: excluded "
+                    f"{excluded_intervals} intervals with a full battery.",
+                )
+            usable &= ~full_battery
+            shape_usable &= ~full_battery
 
         # Calibration represents the available PV potential. A battery or inverter
         # outage can make an otherwise healthy plant cover only local demand; those
@@ -1189,6 +1337,112 @@ class PVForecastAkkudoktorLocal(PVForecastProvider[PVForecastDataRecordT]):
             # A factor above 1 must not push the plant past its inverters.
             frame["ac_power"] = frame["ac_power"].clip(upper=ac_cap_w)
         return frame
+
+    async def _apply_nowcast(self, frame: pd.DataFrame) -> pd.DataFrame:
+        """Scale today's remaining forecast from measured PV production so far.
+
+        The long-term calibration corrects systematic model bias. This optional
+        nowcast corrects the current day's residual weather error: measured PV
+        energy since local midnight is compared with the (already calibrated)
+        model over the same elapsed intervals. The resulting bounded factor is
+        applied only to future slots of the same local day.
+
+        Intervals with a full battery are excluded. Otherwise the deliberately
+        curtailed PV production would make the nowcast reduce the forecast just
+        when the battery has no headroom left.
+        """
+        settings = self._settings
+        now = self.ems_start_datetime
+        if now is None or frame.empty or not isinstance(frame.index, pd.DatetimeIndex):
+            return frame
+
+        interval_minutes = settings.resolution_minutes
+        interval_hours = interval_minutes / 60.0
+        interval = to_duration(f"{interval_minutes} minutes")
+        timezone = self.config.general.timezone
+        now_local = now.in_timezone(timezone) if timezone else now
+        day_start = now_local.start_of("day")
+        end = now_local.start_of("minute").set(
+            minute=(now_local.minute // interval_minutes) * interval_minutes
+        )
+        if compare_datetimes(day_start, end).ge:
+            return frame
+
+        measured_kwh = np.asarray(
+            await self._pv_production_total_kwh(day_start, end, interval), dtype=float
+        )
+        if measured_kwh.size == 0:
+            logger.debug("PV nowcast: no measured PV production for today yet.")
+            return frame
+
+        model = frame["ac_power"].resample(f"{interval_minutes}min").mean()
+        model_index = pd.DatetimeIndex(model.index)
+        if model_index.tz is not None:
+            model_index = model_index.tz_convert("UTC")
+        model.index = model_index
+        grid = pd.date_range(
+            start=pd.Timestamp(day_start.in_timezone("UTC").isoformat()),
+            periods=len(measured_kwh),
+            freq=f"{interval_minutes}min",
+        )
+        model_kwh = model.reindex(grid).to_numpy(dtype=float) * interval_hours / 1000.0
+        floor_kwh = max(
+            0.02 * self._installed_ac_capacity_w() / 1000.0 * interval_hours,
+            0.05 * interval_hours,
+        )
+        usable = np.isfinite(measured_kwh) & np.isfinite(model_kwh) & (model_kwh > floor_kwh)
+        full_battery = await self._full_battery_intervals(
+            day_start, end, interval, len(measured_kwh)
+        )
+        usable &= ~full_battery
+        if int(usable.sum()) < settings.nowcast_min_intervals:
+            logger.debug(
+                "PV nowcast: only {} usable intervals - leaving the forecast unchanged.",
+                int(usable.sum()),
+            )
+            return frame
+
+        model_total = float(model_kwh[usable].sum())
+        measured_total = float(measured_kwh[usable].sum())
+        if model_total <= 0.0 or measured_total <= 0.0:
+            return frame
+        factor = float(
+            np.clip(
+                measured_total / model_total,
+                settings.nowcast_min_factor,
+                settings.nowcast_max_factor,
+            )
+        )
+
+        now_utc = pd.Timestamp(now_local.in_timezone("UTC").isoformat())
+        index = pd.DatetimeIndex(frame.index)
+        if index.tz is None:
+            index = index.tz_localize("UTC")
+        future = index >= now_utc
+        if timezone:
+            future &= (
+                index.tz_convert(timezone).normalize()
+                == pd.Timestamp(day_start.isoformat()).normalize()
+            )
+        else:
+            future &= index.normalize() == pd.Timestamp(day_start.isoformat()).normalize()
+        if not bool(np.any(future)):
+            return frame
+
+        result = frame.copy()
+        result.loc[future, "ac_power"] = result.loc[future, "ac_power"] * factor
+        result.loc[future, "dc_power"] = result.loc[future, "dc_power"] * factor
+        ac_cap_w = self._installed_ac_capacity_w()
+        if ac_cap_w > 0.0:
+            result.loc[future, "ac_power"] = result.loc[future, "ac_power"].clip(upper=ac_cap_w)
+        logger.info(
+            "PVForecastAkkudoktorLocal nowcast: factor {:.3f} from {} measured "
+            "intervals; adjusted {} remaining slots.",
+            factor,
+            int(usable.sum()),
+            int(np.asarray(future).sum()),
+        )
+        return result
 
     # ------------------------------------------------------------------ update
 

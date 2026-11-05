@@ -908,6 +908,23 @@ Hourly meters are fitted hourly; native quarter-hour meters retain their cadence
 Probable outage or curtailment days are excluded by default. Without sufficient
 usable measurements the uncalibrated physical model is used.
 
+Curtailment at a full battery is handled more precisely than a day-level outage:
+with `calibration_exclude_full_battery` enabled (default), intervals in which all
+configured stationary batteries are at their `max_soc_percentage` are removed
+from the fit. This uses the battery SoC measurement keys already configured for
+the devices. Without that filter, midday curtailment can remain above the
+day-level outage threshold and bias the PV model downwards.
+
+An optional intraday nowcast can correct the current day's residual weather
+error. Set `nowcast_enabled` to true to compare measured PV energy since local
+midnight with the calibrated model over the same elapsed intervals. A bounded
+factor from `nowcast_min_factor` to `nowcast_max_factor` is applied only to the
+remaining intervals of the local day; future days keep the normal forecast.
+The nowcast needs at least `nowcast_min_intervals` usable complete intervals and
+uses the same full-battery exclusion as calibration. It works with or without
+long-term calibration, but measured PV production must be configured in
+`measurement.pv_production_emr_keys`.
+
 Transient weather errors are retried. If an update still fails, existing usable
 AC forecasts are retained; a cold start or expired-only forecast reports the
 error. Retention does not extend the available forecast horizon. Calibration and
